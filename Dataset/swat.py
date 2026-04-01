@@ -4,14 +4,99 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import pandas as pd
 import numpy as np
+from pathlib import Path
+
+
+def _read_swat_frame(path):
+    csv_path = Path(path)
+    suffix = csv_path.suffix.lower()
+    if suffix == ".csv":
+        reader = lambda header: pd.read_csv(
+            csv_path,
+            sep=None,
+            engine="python",
+            header=header,
+        )
+    elif suffix == ".xlsx":
+        reader = lambda header: pd.read_excel(csv_path, header=header)
+    else:
+        raise ValueError(f"Unsupported SWaT file format: {csv_path}")
+
+    data = reader(0)
+    data.columns = [str(col).strip() for col in data.columns]
+    # Official SWaT spreadsheets sometimes store the real header on the second row.
+    # Lightweight CSV exports such as swat2.csv already have the correct header but
+    # do not include a Timestamp column, so only retry when both key columns are absent.
+    if "Timestamp" not in data.columns and "Normal/Attack" not in data.columns:
+        data = reader(1)
+        data.columns = [str(col).strip() for col in data.columns]
+    data.columns = [str(col).strip() for col in data.columns]
+    return data
+
+
+def _parse_swat_timestamp_index(data: pd.DataFrame) -> pd.DatetimeIndex:
+    if "Timestamp" in data.columns:
+        timestamps = pd.to_datetime(data["Timestamp"], errors="coerce", dayfirst=True)
+        if timestamps.isna().all():
+            timestamps = pd.to_datetime(data["Timestamp"], errors="coerce")
+        if timestamps.isna().all():
+            raise ValueError("Failed to parse SWaT Timestamp column.")
+        return pd.DatetimeIndex(timestamps)
+
+    base = pd.Timestamp("2015-01-01 00:00:00")
+    return pd.date_range(start=base, periods=len(data), freq="s")
+
+
+def _parse_swat_labels(label_values) -> list[int]:
+    series = pd.Series(label_values)
+    if series.dtype == object:
+        normalized = series.astype(str).str.strip().str.lower()
+        if normalized.isin(["normal", "attack"]).all():
+            return [0 if item == "normal" else 1 for item in normalized]
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    if not numeric.isna().all():
+        return [int(v != 0) for v in numeric.fillna(0).tolist()]
+
+    normalized = series.astype(str).str.strip().str.lower()
+    return [0 if item in {"normal", "0", "false"} else 1 for item in normalized]
+
+
+def _resolve_swat_occ_paths(root):
+    root_path = Path(root) if root else Path("Data/input")
+    if root_path.is_file():
+        attack_csv = root_path
+        base_dir = root_path.parent
+    else:
+        base_dir = root_path
+        attack_candidates = [
+            base_dir / "SWaT_Dataset_Attack_v0.csv",
+            base_dir / "SWaT_Dataset_Attack_v0.xlsx",
+        ]
+        attack_csv = next((p for p in attack_candidates if p.exists()), attack_candidates[0])
+
+    normal_candidates = [
+        base_dir / "SWaT_Dataset_Normal_v1.csv",
+        base_dir / "SWaT_Dataset_Normal_v1.xlsx",
+        base_dir / "SWaT_Dataset_Normal_v0.csv",
+        base_dir / "SWaT_Dataset_Normal_v0.xlsx",
+    ]
+    normal_csv = next((p for p in normal_candidates if p.exists()), normal_candidates[0])
+    return {
+        "normal_csv": str(normal_csv),
+        "attack_csv": str(attack_csv),
+    }
 
 
 def loader_SWat(root, batch_size, window_size, stride_size,train_split,label=False):
-    data = pd.read_csv(root,sep = ';', low_memory=False)
-    Timestamp = pd.to_datetime(data["Timestamp"])
-    data["Timestamp"] = Timestamp
+    data = _read_swat_frame(root)
+    Timestamp = _parse_swat_timestamp_index(data)
+    if "Timestamp" in data.columns:
+        data["Timestamp"] = Timestamp
+    else:
+        data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
-    labels = [ int(l!= 'Normal' ) for l in data["Normal/Attack"].values]
+    labels = _parse_swat_labels(data["Normal/Attack"].values)
     for i in list(data): 
         data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
     data = data.drop(["Normal/Attack"] , axis = 1)
@@ -44,11 +129,15 @@ def loader_SWat(root, batch_size, window_size, stride_size,train_split,label=Fal
     return train_loader, val_loader, test_loader, n_sensor
 
 def loader_SWat_OCC(root, batch_size, window_size, stride_size,train_split,label=False):
-    data = pd.read_csv("Data/input/SWaT_Dataset_Normal_v1.csv",sep = ',', low_memory=False)
-    Timestamp = pd.to_datetime(data["Timestamp"])
-    data["Timestamp"] = Timestamp
+    paths = _resolve_swat_occ_paths(root)
+    data = _read_swat_frame(paths["normal_csv"])
+    Timestamp = _parse_swat_timestamp_index(data)
+    if "Timestamp" in data.columns:
+        data["Timestamp"] = Timestamp
+    else:
+        data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
-    labels = [ int(l!= 'Normal' ) for l in data["Normal/Attack"].values]
+    labels = _parse_swat_labels(data["Normal/Attack"].values)
     for i in list(data): 
         data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
     data = data.drop(["Normal/Attack"] , axis = 1)
@@ -68,11 +157,14 @@ def loader_SWat_OCC(root, batch_size, window_size, stride_size,train_split,label
     val_df = norm_feature.iloc[int(train_split*len(data)):]
     val_label = labels[int(train_split*len(data)):]
     
-    data = pd.read_csv('Data/input/SWaT_Dataset_Attack_v0.csv',sep = ';', low_memory=False)
-    Timestamp = pd.to_datetime(data["Timestamp"])
-    data["Timestamp"] = Timestamp
+    data = _read_swat_frame(paths["attack_csv"])
+    Timestamp = _parse_swat_timestamp_index(data)
+    if "Timestamp" in data.columns:
+        data["Timestamp"] = Timestamp
+    else:
+        data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
-    labels = [ int(l!= 'Normal' ) for l in data["Normal/Attack"].values]
+    labels = _parse_swat_labels(data["Normal/Attack"].values)
     for i in list(data): 
         data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
     data = data.drop(["Normal/Attack"] , axis = 1)

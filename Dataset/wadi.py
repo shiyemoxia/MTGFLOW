@@ -4,15 +4,110 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from pathlib import Path
 
-def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split,label=False):
 
-    data = pd.read_csv("Data/input/WADI_14days.csv",sep=",")#, nrows=1000)
-    labels=[]
-    Timestamp = pd.to_datetime(data['Date'] + ' ' + data['Time'])
-    data=data.drop(data.columns[[0,1,2,50,51,86,87]],axis=1) # Drop the empty and date/time columns
-    labels = [0]*len(data)
+WADI_META_COLS = [
+    "Row",
+    "Date",
+    "Time",
+    "2_LS_001_AL",
+    "2_LS_002_AL",
+    "2_P_001_STATUS",
+    "2_P_002_STATUS",
+]
+WADI_TIMESTAMP_ORIGIN = "2017-10-09 00:00:00"
+
+
+def _read_wadi_csv(path, attack=False):
+    csv_path = Path(path)
+    read_kwargs = {"sep": ","}
+    if "lable" in csv_path.name.lower():
+        read_kwargs["skiprows"] = 1
+    data = pd.read_csv(csv_path, **read_kwargs)
+    data.columns = [str(col).strip() for col in data.columns]
+    return data
+
+
+def _build_wadi_timestamp(length):
+    return pd.date_range(WADI_TIMESTAMP_ORIGIN, periods=int(length), freq="s")
+
+
+def _extract_wadi_attack_labels(data):
+    label_col = next((col for col in data.columns if "Attack LABLE" in str(col)), None)
+    if label_col is None:
+        raise ValueError("WADI attack file is missing the official Attack LABLE column.")
+
+    raw = pd.to_numeric(data[label_col], errors="coerce").fillna(1)
+    labels = (raw == -1).astype(int).tolist()
+    return data.drop(columns=[label_col]), labels
+
+
+def _drop_wadi_meta_columns(data):
+    drop_cols = [col for col in WADI_META_COLS if col in data.columns]
+    return data.drop(columns=drop_cols)
+
+
+def _drop_wadi_excluded_columns(data, exclude_cols=None):
+    if not exclude_cols:
+        return data
+    normalized = {str(col).strip() for col in exclude_cols if str(col).strip()}
+    drop_cols = [col for col in data.columns if str(col).strip() in normalized]
+    if drop_cols:
+        data = data.drop(columns=drop_cols)
+    return data
+
+
+def _drop_nan_rows(df, labels):
+    row_mask = ~df.isna().any(axis=1)
+    clean_df = df.loc[row_mask]
+    clean_labels = np.asarray(labels, dtype=np.int32)[row_mask.to_numpy()]
+    return clean_df, clean_labels.tolist()
+
+
+def _resolve_wadi_paths(root):
+    root_path = Path(root) if root else Path("Data/input")
+    if root_path.is_file():
+        if "attack" in root_path.name.lower():
+            attack_csv = root_path
+            base_dir = root_path.parent
+            train_candidates = [
+                base_dir / "WADI_14days.csv",
+                base_dir / "WADI_14days_new.csv",
+            ]
+        else:
+            base_dir = root_path.parent
+            attack_candidates = [
+                base_dir / "WADI_attackdata.csv",
+                base_dir / "WADI_attackdataLABLE.csv",
+            ]
+            attack_csv = next((p for p in attack_candidates if p.exists()), attack_candidates[0])
+            train_candidates = [root_path]
+    else:
+        base_dir = root_path
+        attack_candidates = [
+            base_dir / "WADI_attackdata.csv",
+            base_dir / "WADI_attackdataLABLE.csv",
+        ]
+        attack_csv = next((p for p in attack_candidates if p.exists()), attack_candidates[0])
+        train_candidates = [
+            base_dir / "WADI_14days.csv",
+            base_dir / "WADI_14days_new.csv",
+        ]
+
+    train_csv = next((p for p in train_candidates if p.exists()), train_candidates[0])
+    return {
+        "train_csv": str(train_csv),
+        "attack_csv": str(attack_csv),
+    }
+
+def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split, label=False, exclude_cols=None):
+    paths = _resolve_wadi_paths(root)
+    data = _read_wadi_csv(paths["train_csv"])#, nrows=1000)
+    Timestamp = _build_wadi_timestamp(len(data))
+    data = _drop_wadi_meta_columns(data)
+    data = _drop_wadi_excluded_columns(data, exclude_cols)
+    labels = [0] * len(data)
 
     data = data.astype(float)
     n_sensor = len(data.columns)
@@ -26,8 +121,7 @@ def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split,labe
     
 
     norm_feature = pd.DataFrame(feature, index = Timestamp, columns=data.columns)
-
-    norm_feature = norm_feature.dropna(axis=0)
+    norm_feature, labels = _drop_nan_rows(norm_feature, labels)
 
 
     train_df = norm_feature.iloc[:]
@@ -35,73 +129,13 @@ def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split,labe
     print('trainset size',train_df.shape, 'anomaly ration', sum(train_label)/len(train_label))
   
    
-    val_df = norm_feature.iloc[int(train_split*len(data)):]
-    val_label = labels[int(train_split*len(data)):]
-    data = pd.read_csv("Data/input/WADI_attackdata.csv",sep=",")#, nrows=1000)
-    labels=[]
-
-    # attack.reset_index()
-    for index, row in data.iterrows():
-        date_temp=row['Date']
-        date_mask="%m/%d/%Y"
-        date_obj=datetime.strptime(date_temp, date_mask)
-        time_temp=row['Time']
-        time_mask="%I:%M:%S.%f %p"
-        time_obj=datetime.strptime(time_temp,time_mask)
-
-        if date_obj==datetime.strptime('10/9/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('7:25:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('7:50:16.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-
-        if date_obj==datetime.strptime('10/10/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('10:24:10.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('10:34:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('10:55:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:24:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:30:40.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:44:50.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('1:39:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('1:50:40.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('2:48:17.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('2:59:55.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('5:40:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('5:49:40.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('10:55:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('10:56:27.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-        
-        if date_obj==datetime.strptime('10/11/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('11:17:54.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:31:20.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:36:31.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:47:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:59:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:05:00.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('12:07:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:10:52.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('12:16:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:25:36.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('3:26:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('3:37:00.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-
-        labels.append('Normal')
-
-    Timestamp = pd.to_datetime(data['Date'] + ' ' + data['Time'])
-    data=data.drop(data.columns[[0,1,2,50,51,86,87]],axis=1) # Drop the empty and date/time columns
-    labels = [ int(l!= 'Normal' ) for l in labels]
+    val_df = norm_feature.iloc[int(train_split*len(norm_feature)):]
+    val_label = labels[int(train_split*len(norm_feature)):]
+    data = _read_wadi_csv(paths["attack_csv"])#, nrows=1000)
+    data, labels = _extract_wadi_attack_labels(data)
+    Timestamp = _build_wadi_timestamp(len(data))
+    data = _drop_wadi_meta_columns(data)
+    data = _drop_wadi_excluded_columns(data, exclude_cols)
     data = data.astype(float)
     n_sensor = len(data.columns)
 
@@ -112,11 +146,10 @@ def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split,labe
     
 
     norm_feature = pd.DataFrame(feature, index = Timestamp, columns=data.columns)
+    norm_feature, labels = _drop_nan_rows(norm_feature, labels)
 
-    norm_feature = norm_feature.dropna(axis=1)
-
-    test_df = norm_feature.iloc[int(train_split*len(data)):]
-    test_label = labels[int(train_split*len(data)):]
+    test_df = norm_feature.iloc[int(train_split*len(norm_feature)):]
+    test_label = labels[int(train_split*len(norm_feature)):]
     print('testset size',test_df.shape, 'anomaly ration', sum(test_label)/len(test_label))
 
     if label:
@@ -130,76 +163,13 @@ def loader_WADI_OCC(root, batch_size, window_size, stride_size, train_split,labe
 
 
 
-def loader_WADI(root, batch_size, window_size, stride_size,train_split,label=False):
-    
-    
-    
-    
-    data = pd.read_csv("Data/input/WADI_attackdata.csv",sep=",")#, nrows=1000)
-    labels=[]
-
-
-    for index, row in data.iterrows():
-        date_temp=row['Date']
-        date_mask="%m/%d/%Y"
-        date_obj=datetime.strptime(date_temp, date_mask)
-        time_temp=row['Time']
-        time_mask="%I:%M:%S.%f %p"
-        time_obj=datetime.strptime(time_temp,time_mask)
-
-        if date_obj==datetime.strptime('10/9/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('7:25:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('7:50:16.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-
-        if date_obj==datetime.strptime('10/10/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('10:24:10.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('10:34:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('10:55:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:24:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:30:40.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:44:50.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('1:39:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('1:50:40.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('2:48:17.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('2:59:55.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('5:40:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('5:49:40.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('10:55:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('10:56:27.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-        
-        if date_obj==datetime.strptime('10/11/2017', '%m/%d/%Y'):
-            if time_obj>=datetime.strptime('11:17:54.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:31:20.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:36:31.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('11:47:00.000 AM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('11:59:00.000 AM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:05:00.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('12:07:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:10:52.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('12:16:00.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('12:25:36.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-            elif time_obj>=datetime.strptime('3:26:30.000 PM', '%I:%M:%S.%f %p') and time_obj<=datetime.strptime('3:37:00.000 PM', '%I:%M:%S.%f %p'):
-                labels.append('Attack')
-                continue
-
-        labels.append('Normal')
- 
-    Timestamp = pd.to_datetime(data['Date'] + ' ' + data['Time'])
-    data=data.drop(data.columns[[0,1,2,50,51,86,87]],axis=1) # Drop the empty and date/time columns
-    labels = [ int(l!= 'Normal' ) for l in labels]
+def loader_WADI(root, batch_size, window_size, stride_size,train_split,label=False, exclude_cols=None):
+    paths = _resolve_wadi_paths(root)
+    data = _read_wadi_csv(paths["attack_csv"])#, nrows=1000)
+    data, labels = _extract_wadi_attack_labels(data)
+    Timestamp = _build_wadi_timestamp(len(data))
+    data = _drop_wadi_meta_columns(data)
+    data = _drop_wadi_excluded_columns(data, exclude_cols)
 
     data = data.astype(float)
 
@@ -211,18 +181,18 @@ def loader_WADI(root, batch_size, window_size, stride_size,train_split,label=Fal
     scaler = StandardScaler()
     norm_feature = scaler.fit_transform(feature)
     norm_feature = pd.DataFrame(norm_feature, index = Timestamp, columns=data.columns)
-    norm_feature = norm_feature.dropna(axis=0)
+    norm_feature, labels = _drop_nan_rows(norm_feature, labels)
 
 
-    train_df = norm_feature.iloc[:int(train_split*len(data))]
-    train_label = labels[:int(train_split*len(data))]
+    train_df = norm_feature.iloc[:int(train_split*len(norm_feature))]
+    train_label = labels[:int(train_split*len(norm_feature))]
     print('trainset size',train_df.shape, 'anomaly ration', sum(train_label)/len(train_label))
 
-    val_df = norm_feature.iloc[int(0.6*len(data)):int(0.8*len(data))]
-    val_label = labels[int(0.6*len(data)):int(0.8*len(data))]
+    val_df = norm_feature.iloc[int(0.6*len(norm_feature)):int(0.8*len(norm_feature))]
+    val_label = labels[int(0.6*len(norm_feature)):int(0.8*len(norm_feature))]
 
-    test_df = norm_feature.iloc[int(train_split*len(data)):]
-    test_label = labels[int(train_split*len(data)):]
+    test_df = norm_feature.iloc[int(train_split*len(norm_feature)):]
+    test_label = labels[int(train_split*len(norm_feature)):]
     print('testset size',test_df.shape, 'anomaly ration', sum(test_label)/len(test_label))
 
     if label:

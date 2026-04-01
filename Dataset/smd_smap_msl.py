@@ -11,6 +11,58 @@ import pandas as pd
 prefix = "Data/input/processed"
 
 
+def _resolve_smd_paths(root, dataset):
+    root_path = root if root else prefix
+    base = os.path.abspath(root_path)
+
+    combined_test = os.path.join(base, f"{dataset}_test.npy")
+    combined_label = os.path.join(base, f"{dataset}_test_label.npy")
+    combined_train = os.path.join(base, f"{dataset}_train.npy")
+    if os.path.exists(combined_test) and os.path.exists(combined_label):
+        return {
+            "mode": "combined_npy",
+            "test": combined_test,
+            "label": combined_label,
+            "train": combined_train if os.path.exists(combined_train) else None,
+        }
+
+    pkl_test = os.path.join(base, dataset + "_test.pkl")
+    pkl_label = os.path.join(base, dataset + "_test_label.pkl")
+    pkl_train = os.path.join(base, dataset + "_train.pkl")
+    if os.path.exists(pkl_test) and os.path.exists(pkl_label):
+        return {
+            "mode": "pkl",
+            "test": pkl_test,
+            "label": pkl_label,
+            "train": pkl_train if os.path.exists(pkl_train) else None,
+        }
+
+    machine_dir = os.path.join(base, dataset)
+    csv_test = os.path.join(machine_dir, f"{dataset}_test.csv")
+    csv_train = os.path.join(machine_dir, f"{dataset}_train.csv")
+    if os.path.exists(csv_test):
+        return {
+            "mode": "csv",
+            "test": csv_test,
+            "train": csv_train if os.path.exists(csv_train) else None,
+        }
+
+    raise FileNotFoundError(f"Unable to resolve SMD/SMAP/MSL paths for {dataset!r} under {root_path!r}")
+
+
+def _load_csv_machine_split(path):
+    df = pd.read_csv(path)
+    df.columns = [str(col).strip() for col in df.columns]
+    label = None
+    if "label" in df.columns:
+        label = df["label"].to_numpy(dtype=np.int32)
+        df = df.drop(columns=["label"])
+    if "timestamp" in df.columns:
+        df = df.drop(columns=["timestamp"])
+    data = df.to_numpy(dtype=np.float32)
+    return data, label
+
+
 def save_z(z, filename='z'):
     """
     save the sampled z in a txt file
@@ -41,7 +93,7 @@ def get_data_dim(dataset):
 
 
 def load_smd_smap_msl(dataset, batch_size = 512, window_size = 60, stride_size = 10, train_split = 0.6, label=False, do_preprocess=True, train_start=0,
-             test_start=0):
+             test_start=0, root=None):
     """
     get data from pkl files
 
@@ -50,18 +102,27 @@ def load_smd_smap_msl(dataset, batch_size = 512, window_size = 60, stride_size =
    
     x_dim = get_data_dim(dataset)
  
-    try:
-        f = open(os.path.join(prefix, dataset + '_test.pkl'), "rb")
-        test_data = pickle.load(f).reshape((-1, x_dim))[test_start:, :]
-        f.close()
-    except (KeyError, FileNotFoundError):
-        test_data = None
-    try:
-        f = open(os.path.join(prefix, dataset + "_test_label.pkl"), "rb")
-        test_label = pickle.load(f).reshape((-1))[test_start:]
-        f.close()
-    except (KeyError, FileNotFoundError):
-        test_label = None
+    paths = _resolve_smd_paths(root, dataset)
+    if paths["mode"] == "pkl":
+        try:
+            f = open(paths["test"], "rb")
+            test_data = pickle.load(f).reshape((-1, x_dim))[test_start:, :]
+            f.close()
+        except (KeyError, FileNotFoundError):
+            test_data = None
+        try:
+            f = open(paths["label"], "rb")
+            test_label = pickle.load(f).reshape((-1))[test_start:]
+            f.close()
+        except (KeyError, FileNotFoundError):
+            test_label = None
+    elif paths["mode"] == "combined_npy":
+        test_data = np.load(paths["test"]).reshape((-1, x_dim))[test_start:, :].astype(np.float32)
+        test_label = np.load(paths["label"]).reshape((-1))[test_start:].astype(np.int32)
+    else:
+        test_data, test_label = _load_csv_machine_split(paths["test"])
+        test_data = test_data[test_start:, :]
+        test_label = test_label[test_start:] if test_label is not None else None
     print('testset size',test_label.shape, 'anomaly ration', sum(test_label)/len(test_label))
 
     whole_data = test_data
@@ -98,7 +159,7 @@ def load_smd_smap_msl(dataset, batch_size = 512, window_size = 60, stride_size =
 
 
 def load_smd_smap_msl_occ(dataset, batch_size = 512, window_size = 60, stride_size = 10, train_split = 0.6, label=False, do_preprocess=True, train_start=0,
-             test_start=0):
+             test_start=0, root=None):
     """
     get data from pkl files
 
@@ -106,22 +167,37 @@ def load_smd_smap_msl_occ(dataset, batch_size = 512, window_size = 60, stride_si
     """
  
     x_dim = get_data_dim(dataset)
-    f = open(os.path.join(prefix, dataset + '_train.pkl'), "rb")
-    train_data = pickle.load(f).reshape((-1, x_dim))[train_start:, :]
-
-    f.close()
-    try:
-        f = open(os.path.join(prefix, dataset + '_test.pkl'), "rb")
-        test_data = pickle.load(f).reshape((-1, x_dim))[test_start:, :]
+    paths = _resolve_smd_paths(root, dataset)
+    if paths["mode"] == "pkl":
+        f = open(paths["train"], "rb")
+        train_data = pickle.load(f).reshape((-1, x_dim))[train_start:, :]
         f.close()
-    except (KeyError, FileNotFoundError):
-        test_data = None
-    try:
-        f = open(os.path.join(prefix, dataset + "_test_label.pkl"), "rb")
-        test_label = pickle.load(f).reshape((-1))[test_start:]
-        f.close()
-    except (KeyError, FileNotFoundError):
-        test_label = None
+        try:
+            f = open(paths["test"], "rb")
+            test_data = pickle.load(f).reshape((-1, x_dim))[test_start:, :]
+            f.close()
+        except (KeyError, FileNotFoundError):
+            test_data = None
+        try:
+            f = open(paths["label"], "rb")
+            test_label = pickle.load(f).reshape((-1))[test_start:]
+            f.close()
+        except (KeyError, FileNotFoundError):
+            test_label = None
+    elif paths["mode"] == "combined_npy":
+        if not paths["train"]:
+            raise FileNotFoundError(f"Missing train npy for {dataset!r}")
+        train_data = np.load(paths["train"]).reshape((-1, x_dim))[train_start:, :].astype(np.float32)
+        test_data = np.load(paths["test"]).reshape((-1, x_dim))[test_start:, :].astype(np.float32)
+        test_label = np.load(paths["label"]).reshape((-1))[test_start:].astype(np.int32)
+    else:
+        if not paths["train"]:
+            raise FileNotFoundError(f"Missing train csv for {dataset!r}")
+        train_data, _ = _load_csv_machine_split(paths["train"])
+        test_data, test_label = _load_csv_machine_split(paths["test"])
+        train_data = train_data[train_start:, :]
+        test_data = test_data[test_start:, :]
+        test_label = test_label[test_start:] if test_label is not None else None
 
   
     if do_preprocess:

@@ -31,6 +31,11 @@ parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--window_size', type=int, default=60)
 parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate.')
+parser.add_argument('--epochs', type=int, default=40, help='Training epochs per seed.')
+parser.add_argument('--seed_start', type=int, default=15, help='Inclusive seed start.')
+parser.add_argument('--seed_end', type=int, default=19, help='Inclusive seed end.')
+parser.add_argument('--setting', type=str, default='unsupervised', choices=['unsupervised', 'occ'],
+                    help='Dataset split setting.')
 
 
 
@@ -39,7 +44,42 @@ args.cuda = torch.cuda.is_available()
 device = torch.device("cuda" if args.cuda else "cpu")
 
 
-for seed in range(15,20):
+def build_loaders(args):
+    from Dataset import (
+        load_smd_smap_msl,
+        load_smd_smap_msl_occ,
+        loader_PSM,
+        loader_PSM_OCC,
+        loader_SWat,
+        loader_SWat_OCC,
+        loader_WADI,
+        loader_WADI_OCC,
+    )
+
+    use_occ = args.setting == 'occ'
+    name = str(args.name)
+    name_lower = name.lower()
+
+    if name_lower == 'swat':
+        loader = loader_SWat_OCC if use_occ else loader_SWat
+        return loader(args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split)
+
+    if name_lower == 'wadi':
+        loader = loader_WADI_OCC if use_occ else loader_WADI
+        return loader(args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split)
+
+    if name_lower == 'psm':
+        loader = loader_PSM_OCC if use_occ else loader_PSM
+        return loader(args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split)
+
+    if name == 'SMAP' or name == 'MSL' or name.startswith('machine'):
+        loader = load_smd_smap_msl_occ if use_occ else load_smd_smap_msl
+        return loader(name, args.batch_size, args.window_size, args.stride_size, args.train_split, root=args.data_dir)
+
+    raise ValueError(f"Unsupported dataset name: {args.name}")
+
+
+for seed in range(args.seed_start, args.seed_end + 1):
     args.seed = seed
     print(args)
     import random
@@ -52,23 +92,7 @@ for seed in range(15,20):
     #%%
     print("Loading dataset")
     print(args.name)
-    from Dataset import load_smd_smap_msl, loader_SWat, loader_WADI, loader_PSM, loader_WADI_OCC
-
-    if args.name == 'SWaT':
-        train_loader, val_loader, test_loader, n_sensor = loader_SWat(args.data_dir, \
-                                                                        args.batch_size, args.window_size, args.stride_size, args.train_split)
-
-    elif args.name == 'Wadi':
-        train_loader, val_loader, test_loader, n_sensor = loader_WADI(args.data_dir, \
-                                                                    args.batch_size, args.window_size, args.stride_size, args.train_split)
-
-    elif args.name == 'SMAP' or args.name == 'MSL' or args.name.startswith('machine'):
-        train_loader, val_loader, test_loader, n_sensor = load_smd_smap_msl(args.name, \
-                                                                    args.batch_size, args.window_size, args.stride_size, args.train_split)
-
-    elif args.name == 'PSM':
-        train_loader, val_loader, test_loader, n_sensor = loader_PSM(args.name, \
-                                                                    args.batch_size, args.window_size, args.stride_size, args.train_split)
+    train_loader, val_loader, test_loader, n_sensor = build_loaders(args)
 
 
 
@@ -80,7 +104,8 @@ for seed in range(15,20):
     from torch.nn.utils import clip_grad_value_
     import seaborn as sns
     import matplotlib.pyplot as plt
-    save_path = os.path.join(args.output_dir,args.name)
+    save_name = f"{args.name}_{args.setting}" if args.setting != 'unsupervised' else args.name
+    save_path = os.path.join(args.output_dir, save_name)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -93,7 +118,7 @@ for seed in range(15,20):
         {'params':model.parameters(), 'weight_decay':args.weight_decay},
         ], lr=lr, weight_decay=0.0)
 
-    for epoch in range(40):
+    for epoch in range(args.epochs):
         print(epoch)
         loss_train = []
 

@@ -4,14 +4,32 @@ from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import pandas as pd
 import numpy as np
+from pathlib import Path
+
+
+def _resolve_psm_paths(root):
+    root_path = Path(root) if root else Path("Data/input/PSM")
+    if root_path.is_file():
+        test_csv = root_path
+        base_dir = root_path.parent
+    else:
+        base_dir = root_path
+        test_csv = base_dir / "test.csv"
+
+    return {
+        "train_csv": str(base_dir / "train.csv"),
+        "test_csv": str(test_csv),
+        "test_label_csv": str(base_dir / "test_label.csv"),
+    }
 
 
 def loader_PSM(root, batch_size, window_size, stride_size,train_split,label=False):
-    data = pd.read_csv("Data/input/PSM/test.csv")
+    paths = _resolve_psm_paths(root)
+    data = pd.read_csv(paths["test_csv"])
     Timestamp = pd.to_datetime(data["timestamp_(min)"])
     data["Timestamp"] = Timestamp
     data = data.set_index("Timestamp")
-    labels = pd.read_csv("Data/input/PSM/test_label.csv")
+    labels = pd.read_csv(paths["test_label_csv"])
     labels = labels.iloc[:,1].values
     data = data.astype(float)
     
@@ -47,8 +65,8 @@ def loader_PSM(root, batch_size, window_size, stride_size,train_split,label=Fals
     return train_loader, val_loader, test_loader, n_sensor
 
 def loader_PSM_OCC(root, batch_size, window_size, stride_size,train_split,label=False):
-    
-    data = pd.read_csv("Data/input/PSM/train.csv")
+    paths = _resolve_psm_paths(root)
+    data = pd.read_csv(paths["train_csv"])
     Timestamp = pd.to_datetime(data["timestamp_(min)"])
     data["Timestamp"] = Timestamp
     data = data.set_index("Timestamp")
@@ -83,11 +101,11 @@ def loader_PSM_OCC(root, batch_size, window_size, stride_size,train_split,label=
     
     
     
-    data = pd.read_csv("Data/input/PSM/test.csv")
+    data = pd.read_csv(paths["test_csv"])
     Timestamp = pd.to_datetime(data["timestamp_(min)"])
     data["Timestamp"] = Timestamp
     data = data.set_index("Timestamp")
-    labels = pd.read_csv("Data/input/PSM/test_label.csv")
+    labels = pd.read_csv(paths["test_label_csv"])
     labels = labels.iloc[:,1].values
     data = data.astype(float)
     

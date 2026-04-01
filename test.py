@@ -1,4 +1,4 @@
-#%%
+
 import os
 import argparse
 import torch
@@ -30,31 +30,58 @@ parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--weight_decay', type=float, default=5e-4)
 parser.add_argument('--window_size', type=int, default=60)
 parser.add_argument('--lr', type=float, default=2e-3, help='Learning rate.')
+parser.add_argument('--setting', type=str, default='unsupervised', choices=['unsupervised', 'occ'],
+                    help='Dataset split setting.')
 
 
 
 args = parser.parse_known_args()[0]
 args.cuda = torch.cuda.is_available()
 device = torch.device("cuda" if args.cuda else "cpu")
-save_path = os.path.join(args.output_dir,args.name)
+save_name = f"{args.name}_{args.setting}" if args.setting != 'unsupervised' else args.name
+save_path = os.path.join(args.output_dir, save_name)
 
-from Dataset import load_smd_smap_msl, loader_SWat, loader_WADI, loader_PSM, loader_WADI_OCC
+from Dataset import (
+    load_smd_smap_msl,
+    load_smd_smap_msl_occ,
+    loader_PSM,
+    loader_PSM_OCC,
+    loader_SWat,
+    loader_SWat_OCC,
+    loader_WADI,
+    loader_WADI_OCC,
+)
 
-if args.name == 'SWaT':
-    train_loader, val_loader, test_loader, n_sensor = loader_SWat(args.data_dir, \
-                                                                    args.batch_size, args.window_size, args.stride_size, args.train_split)
+use_occ = args.setting == 'occ'
+name = str(args.name)
+name_lower = name.lower()
 
-elif args.name == 'Wadi':
-    train_loader, val_loader, test_loader, n_sensor = loader_WADI(args.data_dir, \
-                                                                args.batch_size, args.window_size, args.stride_size, args.train_split)
+if name_lower == 'swat':
+    loader = loader_SWat_OCC if use_occ else loader_SWat
+    train_loader, val_loader, test_loader, n_sensor = loader(
+        args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split
+    )
 
-elif args.name == 'SMAP' or args.name == 'MSL' or args.name.startswith('machine'):
-    train_loader, val_loader, test_loader, n_sensor = load_smd_smap_msl(args.name, \
-                                                                args.batch_size, args.window_size, args.stride_size, args.train_split)
+elif name_lower == 'wadi':
+    loader = loader_WADI_OCC if use_occ else loader_WADI
+    train_loader, val_loader, test_loader, n_sensor = loader(
+        args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split
+    )
 
-elif args.name == 'PSM':
-    train_loader, val_loader, test_loader, n_sensor = loader_PSM(args.name, \
-                                                                args.batch_size, args.window_size, args.stride_size, args.train_split)
+elif name == 'SMAP' or name == 'MSL' or name.startswith('machine'):
+    loader = load_smd_smap_msl_occ if use_occ else load_smd_smap_msl
+    train_loader, val_loader, test_loader, n_sensor = loader(
+        name, args.batch_size, args.window_size, args.stride_size, args.train_split, root=args.data_dir
+    )
+
+elif name_lower == 'psm':
+    loader = loader_PSM_OCC if use_occ else loader_PSM
+    train_loader, val_loader, test_loader, n_sensor = loader(
+        args.data_dir, args.batch_size, args.window_size, args.stride_size, args.train_split
+    )
+
+else:
+    raise ValueError(f"Unsupported dataset name: {args.name}")
 
 
 
