@@ -227,6 +227,6 @@ class SWat_dataset(Dataset):
         """
         start = self.idx[index]
         end = start + self.window_size
-        data = self.data[start:end].reshape([self.window_size,-1, 1])
+        data = self.data[start:end].reshape([self.window_size,-1, 1]).copy()
         return torch.FloatTensor(data).transpose(0,1), self.label[index], index
 
