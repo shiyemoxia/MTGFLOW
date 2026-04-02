@@ -1,5 +1,6 @@
 #%%
 import os
+import csv
 import argparse
 import torch
 from models.MTGFLOW import MTGFLOW
@@ -77,7 +78,10 @@ def build_loaders(args):
         return loader(name, args.batch_size, args.window_size, args.stride_size, args.train_split, root=args.data_dir)
 
     raise ValueError(f"Unsupported dataset name: {args.name}")
-
+save_name = f"{args.name}_{args.setting}" if args.setting != 'unsupervised' else args.name
+save_root = os.path.join(args.output_dir, save_name)
+os.makedirs(save_root, exist_ok=True)
+seed_rows = []
 
 for seed in range(args.seed_start, args.seed_end + 1):
     args.seed = seed
@@ -102,16 +106,10 @@ for seed in range(args.seed_start, args.seed_end + 1):
 
     #%%
     from torch.nn.utils import clip_grad_value_
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    save_name = f"{args.name}_{args.setting}" if args.setting != 'unsupervised' else args.name
-    save_path = os.path.join(args.output_dir, save_name)
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-
-
     loss_best = 100
     roc_max = 0
+    best_checkpoint_path = os.path.join(save_root, f"model_seed{seed}.pth")
+    legacy_checkpoint_path = os.path.join(save_root, "model.pth")
   
     lr = args.lr 
     optimizer = torch.optim.Adam([
@@ -155,7 +153,39 @@ for seed in range(args.seed_start, args.seed_end + 1):
             roc_max = roc_test
             torch.save({
             'model': model.state_dict(),
-            }, f"{save_path}/model.pth")
+            }, best_checkpoint_path)
+            torch.save({
+            'model': model.state_dict(),
+            }, legacy_checkpoint_path)
 
         roc_max = max(roc_test, roc_max)
         print(roc_max)
+
+    print(f"Best ROC for seed {seed}: {roc_max:.10f}")
+    seed_rows.append(
+        {
+            "seed": seed,
+            "best_roc_auc": roc_max,
+            "checkpoint_path": best_checkpoint_path,
+        }
+    )
+
+results_csv_path = os.path.join(save_root, "seed_results.csv")
+with open(results_csv_path, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=["seed", "best_roc_auc", "checkpoint_path"])
+    writer.writeheader()
+    writer.writerows(seed_rows)
+
+if seed_rows:
+    values = np.asarray([row["best_roc_auc"] for row in seed_rows], dtype=np.float64)
+    print("==== Seed Summary ====")
+    for row in seed_rows:
+        print(
+            f"seed={row['seed']:>4} | best_roc_auc={row['best_roc_auc']:.4f} | "
+            f"checkpoint={row['checkpoint_path']}"
+        )
+    print(
+        f"mean={values.mean():.4f} std={values.std(ddof=0):.4f} "
+        f"min={values.min():.4f} max={values.max():.4f}"
+    )
+    print(f"Results CSV saved to: {results_csv_path}")
