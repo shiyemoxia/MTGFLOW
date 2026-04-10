@@ -60,7 +60,7 @@ def _drop_wadi_excluded_columns(data, exclude_cols=None):
 
 def _drop_nan_rows(df, labels):
     row_mask = ~df.isna().any(axis=1)
-    clean_df = df.loc[row_mask]
+    clean_df = df.loc[row_mask].astype(np.float32, copy=False)
     clean_labels = np.asarray(labels, dtype=np.int32)[row_mask.to_numpy()]
     return clean_df, clean_labels.tolist()
 
@@ -219,6 +219,7 @@ class WADI_dataset(Dataset):
         print('data',self.data.shape)
 
     def preprocess(self, df, label):
+        values = np.asarray(df, dtype=np.float32)
 
         start_idx = np.arange(0,len(df)-self.window_size,self.stride_size)
         end_idx = np.arange(self.window_size, len(df), self.stride_size)
@@ -229,7 +230,7 @@ class WADI_dataset(Dataset):
         start_index = start_idx[idx_mask]
         
         label = [0 if sum(label[index:index+self.window_size]) == 0 else 1 for index in start_index ]
-        return df.values, start_idx[idx_mask], np.array(label)
+        return values, start_idx[idx_mask], np.array(label, dtype=np.int32)
 
 
     def __len__(self):
@@ -244,6 +245,6 @@ class WADI_dataset(Dataset):
         """
         start = self.idx[index]
         end = start + self.window_size
-        data = self.data[start:end].reshape([self.window_size,-1, 1])
+        data = self.data[start:end].reshape([self.window_size,-1, 1]).copy()
 
-        return torch.FloatTensor(data).transpose(0,1), self.label[index], index
+        return torch.from_numpy(data).transpose(0,1), self.label[index], index

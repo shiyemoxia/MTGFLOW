@@ -242,7 +242,7 @@ def preprocess(df, mode = 'Normal'):
 
     if np.any(sum(np.isnan(df)) != 0):
         print('Data contains null values. Will be replaced with 0')
-        df = np.nan_to_num()
+        df = np.nan_to_num(df)
 
     # normalize data
     if mode == 'Normal':
@@ -269,13 +269,14 @@ class Smd_smap_msl_dataset(Dataset):
         print('data',self.data.shape)
         # print(len(self.data), len(self.idx), len(self.label))
     def preprocess(self, df, label):
+        values = np.asarray(df, dtype=np.float32)
 
         start_idx = np.arange(0,len(df)-self.window_size,self.stride_size)
         end_idx = np.arange(self.window_size, len(df), self.stride_size)
         
       
         label = [0 if sum(label[index:index+self.window_size]) == 0 else 1 for index in start_idx]
-        return df, start_idx, np.array(label)
+        return values, start_idx, np.array(label, dtype=np.int32)
 
     def __len__(self):
 
@@ -288,5 +289,5 @@ class Smd_smap_msl_dataset(Dataset):
 
         start = self.idx[index]
         end = start + self.window_size
-        data = self.data[start:end].reshape([self.window_size,-1, 1])
-        return torch.FloatTensor(data).transpose(0,1), self.label[index], index
+        data = self.data[start:end].reshape([self.window_size,-1, 1]).copy()
+        return torch.from_numpy(data).transpose(0,1), self.label[index], index

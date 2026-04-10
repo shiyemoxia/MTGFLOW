@@ -23,6 +23,18 @@ def _resolve_psm_paths(root):
     }
 
 
+def _extract_psm_feature_frame(data: pd.DataFrame) -> pd.DataFrame:
+    feature_cols = [col for col in data.columns if str(col).startswith("feature_")]
+    if feature_cols:
+        return data.loc[:, feature_cols].astype(np.float32, copy=False)
+
+    # Fallback for legacy layouts: drop the timestamp-like first column if present.
+    drop_cols = [col for col in data.columns if str(col).strip() == "timestamp_(min)"]
+    if drop_cols:
+        return data.drop(columns=drop_cols).astype(np.float32, copy=False)
+    return data.astype(np.float32, copy=False)
+
+
 def loader_PSM(root, batch_size, window_size, stride_size,train_split,label=False):
     paths = _resolve_psm_paths(root)
     data = pd.read_csv(paths["test_csv"])
@@ -31,19 +43,13 @@ def loader_PSM(root, batch_size, window_size, stride_size,train_split,label=Fals
     data = data.set_index("Timestamp")
     labels = pd.read_csv(paths["test_label_csv"])
     labels = labels.iloc[:,1].values
-    data = data.astype(float)
-    
-    #%%
-    
-    feature = data.iloc[:,:25]
+    feature = _extract_psm_feature_frame(data)
     scaler = StandardScaler()
-    
-
     norm_feature = scaler.fit_transform(feature)
 
     n_sensor = norm_feature.shape[1]
 
-    norm_feature = pd.DataFrame(norm_feature, columns= data.columns[1:], index = Timestamp)
+    norm_feature = pd.DataFrame(norm_feature, columns=feature.columns, index=Timestamp)
     norm_feature = norm_feature.dropna(axis=1)
     train_df = norm_feature.iloc[:int(train_split*len(data))]
     train_label = labels[:int(train_split*len(data))]
@@ -72,21 +78,13 @@ def loader_PSM_OCC(root, batch_size, window_size, stride_size,train_split,label=
     data = data.set_index("Timestamp")
     
     labels = [0] * len(data)
-    data = data.astype(float)
-    
-    #%%
-    print(data.shape)
-    feature = data.iloc[:,:25]
-    print(feature.shape)
-
-
+    feature = _extract_psm_feature_frame(data)
     scaler = StandardScaler()
     norm_feature = scaler.fit_transform(feature)
 
     n_sensor = norm_feature.shape[1]
 
-
-    norm_feature = pd.DataFrame(norm_feature, columns= data.columns[1:], index = Timestamp)
+    norm_feature = pd.DataFrame(norm_feature, columns=feature.columns, index=Timestamp)
 
     norm_feature = norm_feature.dropna(axis=0)
 
@@ -107,19 +105,13 @@ def loader_PSM_OCC(root, batch_size, window_size, stride_size,train_split,label=
     data = data.set_index("Timestamp")
     labels = pd.read_csv(paths["test_label_csv"])
     labels = labels.iloc[:,1].values
-    data = data.astype(float)
-    
-    #%%
-    
-    feature = data.iloc[:,:25]
-    
-   
+    feature = _extract_psm_feature_frame(data)
     scaler = StandardScaler()
     norm_feature = scaler.fit_transform(feature)
 
     n_sensor = norm_feature.shape[1]
  
-    norm_feature = pd.DataFrame(norm_feature, columns= data.columns[1:], index = Timestamp)
+    norm_feature = pd.DataFrame(norm_feature, columns=feature.columns, index=Timestamp)
     norm_feature = norm_feature.dropna(axis=1)
     test_df = norm_feature.iloc[int(train_split*len(data)):]
     test_label = labels[int(train_split*len(data)):]
@@ -149,13 +141,13 @@ class SWat_dataset(Dataset):
         print('data',self.data.shape)
         # print(len(self.data), len(self.idx), len(self.label))
     def preprocess(self, df, label):
-
+        values = np.asarray(df, dtype=np.float32)
         start_idx = np.arange(0,len(df)-self.window_size,self.stride_size)
         end_idx = np.arange(self.window_size, len(df), self.stride_size)
         
     
         label = [0 if sum(label[index:index+self.window_size]) == 0 else 1 for index in start_idx]
-        return df.values, start_idx, np.array(label)
+        return values, start_idx, np.array(label, dtype=np.int32)
 
     def __len__(self):
 
@@ -170,6 +162,6 @@ class SWat_dataset(Dataset):
         # print(self.window_size)
         start = self.idx[index]
         end = start + self.window_size
-        data = self.data[start:end].reshape([self.window_size,-1, 1])
+        data = self.data[start:end].reshape([self.window_size,-1, 1]).copy()
         # print('shape',data.shape)
-        return torch.FloatTensor(data).transpose(0,1), self.label[index], index
+        return torch.from_numpy(data).transpose(0,1), self.label[index], index

@@ -11,12 +11,18 @@ def _read_swat_frame(path):
     csv_path = Path(path)
     suffix = csv_path.suffix.lower()
     if suffix == ".csv":
-        reader = lambda header: pd.read_csv(
-            csv_path,
-            sep=None,
-            engine="python",
-            header=header,
-        )
+        def reader(header):
+            # Fast path for standard comma-separated CSVs such as swat2.csv.
+            # Fall back to the slower Python engine only if needed.
+            try:
+                return pd.read_csv(csv_path, header=header)
+            except Exception:
+                return pd.read_csv(
+                    csv_path,
+                    sep=None,
+                    engine="python",
+                    header=header,
+                )
     elif suffix == ".xlsx":
         reader = lambda header: pd.read_excel(csv_path, header=header)
     else:
@@ -62,6 +68,21 @@ def _parse_swat_labels(label_values) -> list[int]:
     return [0 if item in {"normal", "0", "false"} else 1 for item in normalized]
 
 
+def _coerce_swat_feature_frame(data: pd.DataFrame) -> pd.DataFrame:
+    """Convert SWAT feature columns to float with a fast path for numeric CSVs."""
+    feature_df = data.drop(["Normal/Attack"], axis=1).copy()
+
+    object_cols = feature_df.select_dtypes(include=["object"]).columns
+    if len(object_cols) > 0:
+        # Some original spreadsheet exports store decimal commas as strings.
+        # Apply the replacement only to object columns; swat2.csv is already numeric.
+        feature_df.loc[:, object_cols] = feature_df.loc[:, object_cols].replace(",", ".", regex=True)
+        for col in object_cols:
+            feature_df[col] = pd.to_numeric(feature_df[col], errors="coerce")
+
+    return feature_df.astype(float, copy=False)
+
+
 def _resolve_swat_occ_paths(root):
     root_path = Path(root) if root else Path("Data/input")
     if root_path.is_file():
@@ -97,10 +118,7 @@ def loader_SWat(root, batch_size, window_size, stride_size,train_split,label=Fal
         data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
     labels = _parse_swat_labels(data["Normal/Attack"].values)
-    for i in list(data): 
-        data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
-    data = data.drop(["Normal/Attack"] , axis = 1)
-    data = data.astype(float)
+    data = _coerce_swat_feature_frame(data)
     n_sensor = len(data.columns)
     #%%
     feature = data.iloc[:,:51]
@@ -138,10 +156,7 @@ def loader_SWat_OCC(root, batch_size, window_size, stride_size,train_split,label
         data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
     labels = _parse_swat_labels(data["Normal/Attack"].values)
-    for i in list(data): 
-        data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
-    data = data.drop(["Normal/Attack"] , axis = 1)
-    data = data.astype(float)
+    data = _coerce_swat_feature_frame(data)
     n_sensor = len(data.columns)
     #%%
     feature = data.iloc[:,:51]
@@ -165,10 +180,7 @@ def loader_SWat_OCC(root, batch_size, window_size, stride_size,train_split,label
         data.insert(0, "Timestamp", Timestamp)
     data = data.set_index("Timestamp")
     labels = _parse_swat_labels(data["Normal/Attack"].values)
-    for i in list(data): 
-        data[i]=data[i].apply(lambda x: str(x).replace("," , "."))
-    data = data.drop(["Normal/Attack"] , axis = 1)
-    data = data.astype(float)
+    data = _coerce_swat_feature_frame(data)
     n_sensor = len(data.columns)
  
     feature = data.iloc[:,:51]
@@ -202,6 +214,7 @@ class SWat_dataset(Dataset):
         self.columns = np.append(df.columns, ["Label"])
         self.timeindex = df.index[self.idx]
     def preprocess(self, df, label):
+        values = np.asarray(df, dtype=np.float32)
 
         start_idx = np.arange(0,len(df)-self.window_size,self.stride_size)
         end_idx = np.arange(self.window_size, len(df), self.stride_size)
@@ -213,7 +226,7 @@ class SWat_dataset(Dataset):
         start_index = start_idx[idx_mask]
         
         label = [0 if sum(label[index:index+self.window_size]) == 0 else 1 for index in start_index ]
-        return df.values, start_idx[idx_mask], np.array(label)
+        return values, start_idx[idx_mask], np.array(label, dtype=np.int32)
 
     def __len__(self):
 
@@ -228,5 +241,5 @@ class SWat_dataset(Dataset):
         start = self.idx[index]
         end = start + self.window_size
         data = self.data[start:end].reshape([self.window_size,-1, 1]).copy()
-        return torch.FloatTensor(data).transpose(0,1), self.label[index], index
+        return torch.from_numpy(data).transpose(0,1), self.label[index], index
 
